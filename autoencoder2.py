@@ -50,20 +50,16 @@ class VariationalAutoencoder(object):
         
         self.n_z = network_architecture["n_z"]
         
-        self.act_clamp_ops = []
-        self.grad_clamp_ops = []
+        self.clamp_ops = []
 
         # create forward and backward clampping operator for all controlled zs
         for i in range(controlled_z):
             # print "Creating clamp ops, ", i 
-            self.act_clamp_ops.append(get_act_clamp([i, i], self.batch_size, self.n_z))
-            self.grad_clamp_ops.append(get_grad_clamp([i, i], self.batch_size, self.n_z))
+            self.clamp_ops.append(get_clamp([i, i], self.batch_size, self.n_z))
 
         if self.controlled_z < self.n_z:
             # print "Creating last clamp op"
-            self.act_clamp_ops.append(get_act_clamp([self.controlled_z, \
-                    self.n_z - 1], self.batch_size, self.n_z))
-            self.grad_clamp_ops.append(get_grad_clamp([self.controlled_z, \
+            self.clamp_ops.append(get_clamp([self.controlled_z, \
                     self.n_z - 1], self.batch_size, self.n_z))
 
         # Create autoencoder network
@@ -109,9 +105,9 @@ class VariationalAutoencoder(object):
 
         # forward and backward clamped z vector for different z index
         self.z_clamped = []
-        for i in range(len(self.act_clamp_ops)):
+        for i in range(len(self.clamp_ops)):
             print "Creating clamped zs, ", i 
-            self.z_clamped.append(self.grad_clamp_ops[i](self.act_clamp_ops[i](self.z)))
+            self.z_clamped.append(self.clamp_ops[i](self.z))
 
         # reconstruction using forward and backward clamped z vector
         self.x_reconstr_mean_clamped = []
@@ -284,8 +280,8 @@ class VariationalAutoencoder(object):
                              feed_dict={self.x: X})
 def train(sess, network_architecture, inputs, input_configs, cur_path, clamped_train=False,\
           learning_rate=0.00001,
-          batch_size=50, training_epochs=10, display_step=1,
-          controlled_z=2, rc_loss=1, kl_loss=1, loaded=False):
+          batch_size=50, training_epochs=10, display_step=100,
+          controlled_z=2, rc_loss=1, kl_loss=1, loaded=False, continuous=False):
 
     train_writer = tf.summary.FileWriter(os.path.join(cur_path, 'tb/train/'))
     vae = VariationalAutoencoder(sess, network_architecture, 
@@ -298,16 +294,24 @@ def train(sess, network_architecture, inputs, input_configs, cur_path, clamped_t
     # Training cycle
     for iters in range(total_iters):
         if not clamped_train: 
-            batch_xs = inputs[np.random.choice(range(inputs.shape[0]), batch_size, replace=False),:]
-
+            if not continuous:
+                batch_xs = inputs[np.random.choice(range(inputs.shape[0]), batch_size, replace=False),:]
+            else:
+                type_to_train = random.choice([[t] * input_configs[t]["ratio"] \
+                for t in input_configs.keys()])      
+                type_to_train = type_to_train[0]
+                same_config_inputs = random.choice(input_configs[type_to_train]["index"])
+                inputs_index_to_use = np.random.choice(same_config_inputs, batch_size, replace=False)
+                batch_xs = inputs[inputs_index_to_use, :]
             # Fit training using batch data
             cost, smr, kl, rc = vae.partial_fit(batch_xs, -1)
         else:
             type_to_train = random.choice([[t] * input_configs[t]["ratio"] \
             for t in input_configs.keys()])       
+            type_to_train = type_to_train[0]
             same_config_inputs = random.choice(input_configs[type_to_train]["index"])
-            inputs_index_to_use = np.choice(same_config_inputs, batch_size, replace=False)
-            batch_xs = all_inputs[inputs_index_to_use, :]
+            inputs_index_to_use = np.random.choice(same_config_inputs, batch_size, replace=False)
+            batch_xs = inputs[inputs_index_to_use, :]
         # Fit training using batch data
             cost, smr, kl, rc = vae.partial_fit(batch_xs, input_configs[type_to_train]["z"])
   
@@ -348,18 +352,20 @@ def visualize_reconstruction(vae, folder, inputs):
     for i in range(samples.shape[0]):
         visualize(samples[i,:], os.path.join(folder, str(i)+".png"))
 
-def visualize_latent_space(vae, folder, inputs, color, fn):
-
+def visualize_latent_space(vae, folder, inputs, fn):
+    color = [int((i%vae.batch_size)/10) for i in range(vae.batch_size)]
+    markers = ["o", "x", "+"]
     if not os.path.exists(folder):
         os.mkdir(folder)
 
-    z_mu = np.concatenate(\
-        [vae.transform(inputs[i*vae.batch_size:(i+1) * vae.batch_size,]) for i in \
-            range(0, inputs.shape[0]/vae.batch_size)])
-
     plt.figure(figsize=(8, 6))
     plt.grid()
-    plt.scatter(z_mu[:, 0], z_mu[:, 1], c=color) 
+    for index in range(len(inputs)):  
+        inp = inputs[index]
+        z_mu = np.concatenate(\
+            [vae.transform(inp[i*vae.batch_size:(i+1) * vae.batch_size,:]) for i in \
+            range(0, (inp.shape[0])/vae.batch_size)])
+        plt.scatter(z_mu[:, 0], z_mu[:, 1], c=color, marker=markers[index]) 
     plt.colorbar()
     plt.savefig(os.path.join(folder, fn+'.png'))
 
@@ -393,12 +399,20 @@ input_configs = {
 }
 
 # saver = tf.train.Saver()
-for b in [0,1,2,4]:
-    sess = tf.InteractiveSession()
+b=1
+tag="_clamp"
+#tag="_continuous"
+#tag=""
+epoches=100
+clamp=True
 
-    vae = train(sess, network_architecture, inputs, input_configs, cur_path, batch_size=100, training_epochs=100, kl_loss=b, clamped_train=False)
-    visualize_reconstruction(vae, os.path.join(cur_path, "reconstruction_vae_light_b_"+str(b)), inputs[5000:5100,:])
-    visualize_reconstruction(vae, os.path.join(cur_path, "reconstruction_vae_rot_b_"+str(b)), inputs[range(50,10000,100),:])
+sess = tf.InteractiveSession()
+
+vae = train(sess, network_architecture, inputs, input_configs, cur_path, batch_size=100, training_epochs=epoches, kl_loss=b, clamped_train=clamp, continuous=False)
+visualize_reconstruction(vae, os.path.join(cur_path, "reconstruction_vae_light_b_"+str(b)+tag), inputs[5000:5100,:])
+visualize_reconstruction(vae, os.path.join(cur_path, "reconstruction_vae_rot_b_"+str(b)+tag), inputs[range(50,10000,100),:])
 # saver.save(sess, os.path.join(cur_path, "save.ckpt"))
-    visualize_latent_space(vae, os.path.join(cur_path, "latent_viz_b_"+str(b)), inputs[5000:5100,:], [int((i%100)/10) for i in range(100)], "light")
-    visualize_latent_space(vae, os.path.join(cur_path, "latent_viz_b_"+str(b)), inputs[range(50,10000,100),:], [int((i%100)/10) for i in range(100)], "rotation")
+visualize_latent_space(vae, os.path.join(cur_path, "latent_viz_b_"+str(b)+tag), \
+    [inputs[5000:5100,:],inputs[0:100,:],inputs[9900:10000,:]],  "light")
+visualize_latent_space(vae, os.path.join(cur_path, "latent_viz_b_"+str(b)+tag), \
+    [inputs[range(0,10000,100),:],inputs[range(50,10000,100),:],inputs[range(99,10000,100),:]], "rotation")
