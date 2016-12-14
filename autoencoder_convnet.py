@@ -219,7 +219,7 @@ class VariationalAutoencoder(object):
             'h2': weight_variable([7, 7, 1, 32]),
             'h3': weight_variable([7, 7, 32, 64]),
             'h4': weight_variable([7, 7, 64, 96]),
-            'out_mean': weight_variable([1, 1, 96, 1]),
+            'out_mean': weight_variable([7, 7, 96, 1]),
         all_weights['biases_gener'] = {
             'b1': bias_variables([7200]),
             'b2': bias_variables([32]),
@@ -248,15 +248,11 @@ class VariationalAutoencoder(object):
         # Generate probabilistic decoder (decoder network), which
         # maps points in latent space onto a Bernoulli distribution in data space.
         # The transformation is parametrized and can be learned.
-        layer_1 = max_pool_2x2(relu(conv2d, z, weights['h1'], biases['h1']))
-        layer_2 = self.transfer_fct(tf.add(tf.matmul(layer_1, weights['h2']), 
-                                           biases['b2'])) 
-        layer_3 = self.transfer_fct(tf.add(tf.matmul(layer_2, weights['h3']), 
-                                           biases['b3'])) 
- 
-        x_reconstr_mean = \
-            tf.nn.sigmoid(tf.add(tf.matmul(layer_3, weights['out_mean']), 
-                                 biases['out_mean']))
+        layer_1 = tf.nn.bias_add(mult(z, weights['h1']), biases['h1'])
+        layer_2 = relu(conv2d(tf.image.resize_images(flatten(layer_1, [self.batch_size, 15, 15,1]), [30, 30], method=1), weights['h2'], biases['h2']))
+        layer_3 = relu(conv2d(tf.image.resize_images(layer_2, [48, 48], method=1), weights['h3'], biases['h3']))
+        layer_4 = relu(conv2d(tf.image.resize_images(layer_3, [84, 84], method=1), weights['h4'], biases['h4']))
+        x_reconstr_mean = relu(conv2d(tf.image.resize_images(layer_3, [156, 156], method=1), weights['out_mean'], biases['out_mean']))
         
         return x_reconstr_mean
             
@@ -457,7 +453,7 @@ network_architecture = \
          n_input=22500, # NIST data input (img shape: 28*28)
          n_z=2)  # dimensionality of latent space
 
-inputs = np.load("/home/ubuntu/data/statue1_rot_100_light_100/X_train.npy")
+inputs = np.reshape(np.load("/home/ubuntu/data/statue1_rot_100_light_100/X_train.npy"), [10000, 150, 150, 1])
 cur_path = "/home/ubuntu/Documents/dc_ign/"
 # index contains a list of index lists where each index lists is a 
 # specfic configuration of a given variation (e.g "rotation"),
