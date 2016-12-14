@@ -2,7 +2,7 @@ import tensorflow as tf
 from tensorflow.python.framework import function
 import numpy as np
 
-def get_clamp(active_z_range, n_z, batch_size, invariance_factor=100):
+def get_clamp(active_z_range, batch_size,n_z, invariance_factor=100):
     """
     concatonation of both act_clamp and grad_clamp operator
     """

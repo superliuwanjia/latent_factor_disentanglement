@@ -15,6 +15,86 @@ tf.set_random_seed(0)
 np.set_printoptions(threshold='nan')
 
 data_folder = "/home/ubuntu/data/statue1_rot_100_light_100/"
+def conv2d(x, W, b):
+    '''
+    Perform 2-D convolution
+    :param x: input tensor of size [N, W, H, Cin] where
+    N: the number of images
+    W: width of images
+    H: height of images
+    Cin: the number of channels of images
+    :param W: weight tensor [w, h, Cin, Cout]
+    w: width of the filters
+    h: height of the filters
+    Cin: the number of the channels of the filters = the number of channels of images
+    Cout: the number of filters
+    :return: a tensor of features extracted by the filters, a.k.a. the results after convolution
+    '''
+
+    # IMPLEMENT YOUR CONV2D HERE
+    h_conv = tf.nn.conv2d(x, W, [1, 1, 1, 1], "SAME")
+    return tf.nn.bias_add(h_conv, b)
+
+def max_pool_2x2(x):
+    '''
+    Perform non-overlapping 2-D maxpooling on 2x2 regions in the input data
+    :param x: input data
+    :return: the results of maxpooling (max-marginalized + downsampling)
+    '''
+
+    # IMPLEMENT YOUR MAX_POOL_2X2 HERE
+    h_max = tf.nn.max_pool(x, [1, 2, 2, 1], [1, 2, 2, 1], "SAME")
+    return h_max
+
+def relu(x):
+    '''
+    Apply ReLU on input
+    '''
+    relu_out = tf.nn.relu(x)
+    return relu_out
+
+def flatten(x, shape):
+    return tf.reshape(x, shape=shape)
+
+    
+def mult(x, W):
+    return tf.matmul(x, W)
+    
+def softmax(x):
+    return tf.nn.softmax(x)
+
+
+def weight_variable(shape):
+    '''
+    Initialize weights
+    :param shape: shape of weights, e.g. [w, h ,Cin, Cout] where
+    w: width of the filters
+    h: height of the filters
+    Cin: the number of the channels of the filters
+    Cout: the number of filters
+    :return: a tensor variable for weights with initial values
+    '''
+
+    # IMPLEMENT YOUR WEIGHT_VARIABLE HERE
+    #if len(shape) == 4:
+    #W = tf.truncated_normal(shape,stddev=0.0001)
+    #else:
+    W = tf.random_normal(shape,stddev=0.01)
+    #W = tf.zeros(shape)
+    return tf.Variable(W)
+
+def bias_variable(shape):
+    '''
+    Initialize biases
+    :param shape: shape of biases, e.g. [Cout] where
+    Cout: the number of filters
+    :return: a tensor variable for biases with initial values
+    '''
+
+    # IMPLEMENT YOUR BIAS_VARIABLE HERE
+    b = tf.random_normal(shape=shape)
+    return tf.Variable(b)
+
 
 def xavier_init(fan_in, fan_out, constant=1): 
     """ Xavier initialization of network weights"""
@@ -36,7 +116,7 @@ class VariationalAutoencoder(object):
     See "Auto-Encoding Variational Bayes" by Kingma and Welling for more details.
     """
     def __init__(self, sess, network_architecture, transfer_fct=tf.nn.softplus, 
-                 learning_rate=0.0001, batch_size=100, controlled_z=3, rc_loss=1, kl_loss=1):
+                 learning_rate=0.001, batch_size=100, controlled_z=3, rc_loss=1, kl_loss=1):
         self.network_architecture = network_architecture
         self.transfer_fct = transfer_fct
         self.learning_rate = learning_rate
@@ -117,58 +197,50 @@ class VariationalAutoencoder(object):
                     network_weights["biases_gener"],
                     z))
  
-    def _initialize_weights(self, n_hidden_recog_1, n_hidden_recog_2, n_hidden_recog_3, n_hidden_recog_4,
-                            n_hidden_gener_1,  n_hidden_gener_2, n_hidden_gener_3, n_hidden_gener_4,
+    def _initialize_weights(self, n_hidden_recog_1, n_hidden_recog_2, n_hidden_recog_3, 
+                            n_hidden_gener_1,  n_hidden_gener_2, n_hidden_gener_3,
                             n_input, n_z):
         self.n_z = n_z
         all_weights = dict()
         all_weights['weights_recog'] = {
-            'h1': tf.Variable(xavier_init(n_input, n_hidden_recog_1)),
-            'h2': tf.Variable(xavier_init(n_hidden_recog_1, n_hidden_recog_2)),
-            'h3': tf.Variable(xavier_init(n_hidden_recog_2, n_hidden_recog_3)),
-            'h4': tf.Variable(xavier_init(n_hidden_recog_3, n_hidden_recog_4)),
-            'out_mean': tf.Variable(xavier_init(n_hidden_recog_4, n_z)),
-            'out_log_sigma': tf.Variable(xavier_init(n_hidden_recog_4, n_z))}
+            'h1': weight_variable([5, 5, 1, 96]), # 146/2 = 73
+            'h2': weight_variable([6, 6, 32, 64]), # 68/2 = 34
+            'h3': weight_variable([5, 5, 64, 32]), # 30/2 = 15
+            'out_mean': weight_variable([15 * 15 * 32, n_z]),
+            'out_log_sigma': weight_variable([32, n_z])}
         all_weights['biases_recog'] = {
-            'b1': tf.Variable(tf.zeros([n_hidden_recog_1], dtype=tf.float32)),
-            'b2': tf.Variable(tf.zeros([n_hidden_recog_2], dtype=tf.float32)),
-            'b3': tf.Variable(tf.zeros([n_hidden_recog_3], dtype=tf.float32)),
-            'b4': tf.Variable(tf.zeros([n_hidden_recog_4], dtype=tf.float32)),
-            'out_mean': tf.Variable(tf.zeros([n_z], dtype=tf.float32)),
-            'out_log_sigma': tf.Variable(tf.zeros([n_z], dtype=tf.float32))}
+            'b1': bias_variable([96]),
+            'b2': bias_variable([64]),
+            'b3': bias_variable([32]),
+            'out_mean': bias_variable([n_z]),
+            'out_log_sigma': bias_variable([n_z])}
         all_weights['weights_gener'] = {
-            'h1': tf.Variable(xavier_init(n_z, n_hidden_gener_1)),
-            'h2': tf.Variable(xavier_init(n_hidden_gener_1, n_hidden_gener_2)),
-            'h3': tf.Variable(xavier_init(n_hidden_gener_2, n_hidden_gener_3)),
-            'h4': tf.Variable(xavier_init(n_hidden_gener_3, n_hidden_gener_4)),
-            'out_mean': tf.Variable(xavier_init(n_hidden_gener_4, n_input)),
-            'out_log_sigma': tf.Variable(xavier_init(n_hidden_gener_3, n_input))}
+            'h1': weight_variable([n_z, 7200]),
+            'h2': weight_variable([7, 7, 1, 32]),
+            'h3': weight_variable([7, 7, 32, 64]),
+            'h4': weight_variable([7, 7, 64, 96]),
+            'out_mean': weight_variable([1, 1, 96, 1]),
         all_weights['biases_gener'] = {
-            'b1': tf.Variable(tf.zeros([n_hidden_gener_1], dtype=tf.float32)),
-            'b2': tf.Variable(tf.zeros([n_hidden_gener_2], dtype=tf.float32)),
-            'b3': tf.Variable(tf.zeros([n_hidden_gener_3], dtype=tf.float32)),
-            'b4': tf.Variable(tf.zeros([n_hidden_gener_4], dtype=tf.float32)),
-            'out_mean': tf.Variable(tf.zeros([n_input], dtype=tf.float32)),
-            'out_log_sigma': tf.Variable(tf.zeros([n_input], dtype=tf.float32))}
+            'b1': bias_variables([7200]),
+            'b2': bias_variables([32]),
+            'b3': bias_variables([64]),
+            'b4': bias_variables([96]),
+            'out_mean': bias_variables([1]),
         return all_weights
             
     def _recognition_network(self, weights, biases, x):
         # Generate probabilistic encoder (recognition network), which
         # maps inputs onto a normal distribution in latent space.
         # The transformation is parametrized and can be learned.
-        layer_1 = self.transfer_fct(tf.add(tf.matmul(x, weights['h1']), 
-                                           biases['b1'])) 
-        layer_2 = self.transfer_fct(tf.add(tf.matmul(layer_1, weights['h2']), 
-                                           biases['b2'])) 
-        layer_3 = self.transfer_fct(tf.add(tf.matmul(layer_2, weights['h3']), 
-                                           biases['b3'])) 
-        layer_4 = self.transfer_fct(tf.add(tf.matmul(layer_3, weights['h4']), 
-                                           biases['b4'])) 
- 
-        z_mean = tf.add(tf.matmul(layer_4, weights['out_mean']),
+        layer_1 = max_pool_2x2(relu(conv2d(x, weights['h1'], biases['h1'])))
+        layer_2 = max_pool_2x2(relu(conv2d(layer_1, weights['h2'], biases['h2'])))
+        layer_3 = max_pool_2x2(relu(conv2d(layer_2, weights['h3'], biases['h3'])))
+        layer_4 = tf.nn.bias_add(mult(flatten(layer_3, [self.batch_size, 15*15*128]),weights['h4']), biases['h4']) 
+        layer_5 = tf.nn.bias_add(mult(layer_4,weights['h5']), biases['h5']) 
+        z_mean = tf.nn.bias_add(mult(layer_5, weights['out_mean']),
                         biases['out_mean'])
         z_log_sigma_sq = \
-            tf.add(tf.matmul(layer_4, weights['out_log_sigma']), 
+            tf.nn.bias_add(mult(layer_5, weights['out_log_sigma']), 
                    biases['out_log_sigma'])
         return (z_mean, z_log_sigma_sq)
 
@@ -176,17 +248,14 @@ class VariationalAutoencoder(object):
         # Generate probabilistic decoder (decoder network), which
         # maps points in latent space onto a Bernoulli distribution in data space.
         # The transformation is parametrized and can be learned.
-        layer_1 = self.transfer_fct(tf.add(tf.matmul(z, weights['h1']), 
-                                           biases['b1'])) 
+        layer_1 = max_pool_2x2(relu(conv2d, z, weights['h1'], biases['h1']))
         layer_2 = self.transfer_fct(tf.add(tf.matmul(layer_1, weights['h2']), 
                                            biases['b2'])) 
         layer_3 = self.transfer_fct(tf.add(tf.matmul(layer_2, weights['h3']), 
                                            biases['b3'])) 
-        layer_4 = self.transfer_fct(tf.add(tf.matmul(layer_3, weights['h4']), 
-                                           biases['b4'])) 
  
         x_reconstr_mean = \
-            tf.nn.sigmoid(tf.add(tf.matmul(layer_4, weights['out_mean']), 
+            tf.nn.sigmoid(tf.add(tf.matmul(layer_3, weights['out_mean']), 
                                  biases['out_mean']))
         
         return x_reconstr_mean
@@ -379,14 +448,12 @@ def visualize_latent_space(vae, folder, inputs, fn):
     plt.savefig(os.path.join(folder, fn+'.png'))
 
 network_architecture = \
-    dict(n_hidden_recog_1=4000, # 1st layer encoder neurons
-         n_hidden_recog_2=1000, # 2nd layer encoder neurons
-         n_hidden_recog_3=500, # 2nd layer encoder neurons
-         n_hidden_recog_4=100, # 2nd layer encoder neurons
-         n_hidden_gener_1=100, # 2nd layer encoder neurons
-         n_hidden_gener_2=500, # 1st layer decoder neurons
+    dict(n_hidden_recog_1=1000, # 1st layer encoder neurons
+         n_hidden_recog_2=500, # 2nd layer encoder neurons
+         n_hidden_recog_3=100, # 2nd layer encoder neurons
+         n_hidden_gener_1=100, # 1st layer decoder neurons
+         n_hidden_gener_2=500, # 2nd layer decoder neurons
          n_hidden_gener_3=1000, # 2nd layer decoder neurons
-         n_hidden_gener_4=4000, # 2nd layer decoder neurons
          n_input=22500, # NIST data input (img shape: 28*28)
          n_z=2)  # dimensionality of latent space
 
@@ -410,10 +477,10 @@ input_configs = {
 }
 
 # saver = tf.train.Saver()
-blist=[1]
+blist=[100]
 tag="_clamp"
 tag="_continuous"
-tag="_large"
+tag=""
 epoches=100
 clamp=False
 for b in blist:
