@@ -1,229 +1,442 @@
-# -*- coding: utf-8 -*-
-
-""" Auto Encoder Example.
-Using an auto encoder on MNIST handwritten digits.
-References:
-    Y. LeCun, L. Bottou, Y. Bengio, and P. Haffner. "Gradient-based
-    learning applied to document recognition." Proceedings of the IEEE,
-    86(11):2278-2324, November 1998.
-Links:
-    [MNIST Dataset] http://yann.lecun.com/exdb/mnist/
-"""
-from __future__ import division, print_function, absolute_import
-
-import tensorflow as tf
+import random
 import numpy as np
+import tensorflow as tf
+import PIL.Image
 import matplotlib.pyplot as plt
 
-# Import MNIST data
-from tensorflow.examples.tutorials.mnist import input_data
-mnist = input_data.read_data_sets("/tmp/data/", one_hot=True)
+from tensorflow.python.framework import function
 
-def weight_variable(shape):
-    '''
-    Initialize weights
-    :param shape: shape of weights, e.g. [w, h ,Cin, Cout] where
-    w: width of the filters
-    h: height of the filters
-    Cin: the number of the channels of the filters
-    Cout: the number of filters
-    :return: a tensor variable for weights with initial values
-    '''
+from clamping_ops import *
+# import matplotlib.pyplot as plt
+import os
 
-    # IMPLEMENT YOUR WEIGHT_VARIABLE HERE
-    #if len(shape) == 4:
-    #W = tf.truncated_normal(shape,stddev=0.0001)
-    #else:
-    W = tf.random_normal(shape,stddev=1)
-    #W = tf.zeros(shape)
-    return tf.Variable(W)
+np.random.seed(0)
+tf.set_random_seed(0)
+np.set_printoptions(threshold='nan')
 
-def bias_variable(shape):
-    '''
-    Initialize biases
-    :param shape: shape of biases, e.g. [Cout] where
-    Cout: the number of filters
-    :return: a tensor variable for biases with initial values
-    '''
+data_folder = "/home/ubuntu/data/statue1_rot_100_light_100/"
 
-    # IMPLEMENT YOUR BIAS_VARIABLE HERE
-    b = tf.random_normal(shape=shape)
-    return tf.Variable(b)
+def xavier_init(fan_in, fan_out, constant=1): 
+    """ Xavier initialization of network weights"""
+    # https://stackoverflow.com/questions/33640581/how-to-do-xavier-initialization-on-tensorflow
+    low = -constant*np.sqrt(6.0/(fan_in + fan_out)) 
+    high = constant*np.sqrt(6.0/(fan_in + fan_out))
+#    return tf.ones((fan_in, fan_out), dtype=tf.float32)
+    return tf.random_uniform((fan_in, fan_out), 
+                             minval=low, maxval=high, 
+                             dtype=tf.float32)
 
-def conv2d(x, W, b):
-    '''
-    Perform 2-D convolution
-    :param x: input tensor of size [N, W, H, Cin] where
-    N: the number of images
-    W: width of images
-    H: height of images
-    Cin: the number of channels of images
-    :param W: weight tensor [w, h, Cin, Cout]
-    w: width of the filters
-    h: height of the filters
-    Cin: the number of the channels of the filters = the number of channels of images
-    Cout: the number of filters
-    :return: a tensor of features extracted by the filters, a.k.a. the results after convolution
-    '''
-
-    # IMPLEMENT YOUR CONV2D HERE
-    h_conv = tf.nn.conv2d(x, W, [1, 1, 1, 1], "SAME")
-    return tf.nn.bias_add(h_conv, b)
-
-def max_pool_2x2(x):
-    '''
-    Perform non-overlapping 2-D maxpooling on 2x2 regions in the input data
-    :param x: input data
-    :return: the results of maxpooling (max-marginalized + downsampling)
-    '''
-
-    # IMPLEMENT YOUR MAX_POOL_2X2 HERE
-    h_max = tf.nn.max_pool(x, [1, 2, 2, 1], [1, 2, 2, 1], "SAME")
-    return h_max
-def relu(x):
-    '''
-    Apply ReLU on input
-    '''
-    relu_out = tf.nn.relu(x)
-    return relu_out
-
-def reshape(x, shape):
-    return tf.reshape(x, shape=shape)
-
-def resize(x, size):
-    return tf.image.resize_images(x, size)
+class VariationalAutoencoder(object):
+    """ Variation Autoencoder (VAE) with an sklearn-like interface implemented using TensorFlow.
     
-def mult(x, W):
-    return tf.matmul(x, W)
+    This implementation uses probabilistic encoders and decoders using Gaussian 
+    distributions and  realized by multi-layer perceptrons. The VAE can be learned
+    end-to-end.
     
-def softmax(x):
-    return tf.nn.softmax(x)
+    See "Auto-Encoding Variational Bayes" by Kingma and Welling for more details.
+    """
+    def __init__(self, sess, network_architecture, transfer_fct=tf.nn.softplus, 
+                 learning_rate=0.0001, batch_size=100, controlled_z=3, rc_loss=1, kl_loss=1):
+        self.network_architecture = network_architecture
+        self.transfer_fct = transfer_fct
+        self.learning_rate = learning_rate
+        self.batch_size = batch_size
+        self.controlled_z = controlled_z
+        self.rc_loss=rc_loss
+        self.kl_loss=kl_loss
+         
+        # tf Graph input
+        self.x = tf.placeholder(tf.float32, [batch_size, network_architecture["n_input"]])
+        
+        self.n_z = network_architecture["n_z"]
+        
+        self.clamp_ops = []
 
+        # create forward and backward clampping operator for all controlled zs
+        for i in range(controlled_z):
+            # print "Creating clamp ops, ", i 
+            self.clamp_ops.append(get_clamp([i, i], self.batch_size, self.n_z))
 
-# Parameters
-learning_rate = 0.01
-training_epochs = 20
-batch_size = 50
-display_step = 1
-examples_to_show = 10
+        if self.controlled_z < self.n_z:
+            # print "Creating last clamp op"
+            self.clamp_ops.append(get_clamp([self.controlled_z, \
+                    self.n_z - 1], self.batch_size, self.n_z))
 
-# Network Parameters
-n_hidden_1 = 96 # 1st layer num features
-n_hidden_2 = n_hidden_1 / 2 # 2nd layer num features
-n_hidden_3 = n_hidden_2 / 2 # 2nd layer num features
-z_size = 240
+        # Create autoencoder network
+        self._create_network()
+        # Define loss function based variational upper-bound and 
+        # corresponding optimizer
+        self._create_loss()
 
-im_size = 150 # width and height of imput image
-e_filter_size = 5
-d_filter_size = e_filter_size
+        self.summaries = tf.summary.merge_all()
+                
+        # Initializing the tensor flow variables
+        init = tf.initialize_all_variables()
 
-# tf Graph input (only pictures)
-X = tf.placeholder("float", [None, im_size, im_size, 1], name="input")
-
-weights = {
-    'encoder_h1': weight_variable([5, 5, 1 ,n_hidden_1]), # 146 / 2= 73
-    'encoder_h2': weight_variable([4, 4, n_hidden_1 ,n_hidden_2]), # 70 / 2 = 35
-    'encoder_h3': weight_variable([4, 4, n_hidden_2 ,n_hidden_3]), # 32 / 2 = 16, total 24 * 16 * 16
-    'encoder_h4': weight_variable([n_hidden_3 * 16 * 16, n_hidden_3 * 16 * 16]), # 24 * 16 * 16
-    'encoder_h5': weight_variable([n_hidden_3 * 16 * 16, z_size]),
+        # Launch the session
+        self.sess = sess
+        self.sess.run(init)
     
-    'decoder_h5': weight_variable([7, 7, n_hidden_1, 1]), # 146 / 2= 73
-    'decoder_h4': weight_variable([5, 5, n_hidden_2 ,n_hidden_1]), # 70 / 2 = 35
-    'decoder_h3': weight_variable([5, 5, n_hidden_3 ,n_hidden_2]), # 32 / 2 = 16, total 24 * 16 * 16
-    'decoder_h2': weight_variable([n_hidden_3 * 16 * 16, n_hidden_3 * 16 * 16]), # 24 * 16 * 16
-    'decoder_h1': weight_variable([z_size, n_hidden_3 * 16 * 16]),
-}
+    def _create_network(self):
+        # Initialize autoencode network weights and biases
+        network_weights = self._initialize_weights(**self.network_architecture)
 
-biases = {
-    'encoder_b1': bias_variable([n_hidden_1]),
-    'encoder_b2': bias_variable([n_hidden_2]),
-    'encoder_b3': bias_variable([n_hidden_3]),
-    'encoder_b4': bias_variable([1]),
-    'encoder_b5': bias_variable([1]),
+        n_z = self.network_architecture["n_z"]
+        # Use recognition network to determine mean and 
+        # (log) variance of Gaussian distribution in latent
+        # space
+        self.z_mean, self.z_log_sigma_sq = \
+            self._recognition_network(network_weights["weights_recog"], 
+                                      network_weights["biases_recog"],
+                                      self.x)
 
-    'decoder_b5': bias_variable([n_hidden_1]),
-    'decoder_b4': bias_variable([n_hidden_2]),
-    'decoder_b3': bias_variable([n_hidden_3]),
-    'decoder_b2': bias_variable([1]),
-    'decoder_b1': bias_variable([1]),
-}
+        # Draw one sample z from Gaussian distribution
+        eps = tf.random_normal((self.batch_size, n_z), 0, 1, 
+                               dtype=tf.float32)
+        # z = mu + sigma*epsilon
+        self.z = tf.add(self.z_mean, 
+                        tf.mul(tf.sqrt(tf.exp(self.z_log_sigma_sq)), eps))
+        
+        # Use generator to determine mean of reconstruction
+        self.x_reconstr_mean = \
+            self._generator_network(network_weights["weights_gener"],
+                                    network_weights["biases_gener"],
+                                    self.z)
 
+        # forward and backward clamped z vector for different z index
+        self.z_clamped = []
+        for i in range(len(self.clamp_ops)):
+            print "Creating clamped zs, ", i 
+            self.z_clamped.append(self.clamp_ops[i](self.z))
 
-# Building the encoder
-def encoder(x):
-    # Encoder Hidden layer with sigmoid activation #1
-    layer_1 = max_pool_2x2(relu(conv2d(x, weights['encoder_h1'], biases['encoder_b1'])))
-    # Encoder Hidden layer with sigmoid activation #2
-    layer_2 = max_pool_2x2(relu(conv2d(layer_1, weights['encoder_h2'], biases['encoder_b2'])))
-    # Encoder Hidden layer with sigmoid activation #3
-    layer_3 = reshape( \
-            max_pool_2x2(relu(conv2d(layer_2, weights['encoder_h3'], biases['encoder_b3']))), \
-            [-1, n_hidden_3 * 16 * 16])
-    # FC
-    layer_4 = conv2d(layer_3, weights['encoder_h4'], biases['encoder_h4'])
-    # FC to Z , TODO: Do we need Relu here?
-    z = conv2d(layer_4, weights['encoder_h5'], biases['encoder_h5'])
-    return z
+        # reconstruction using forward and backward clamped z vector
+        self.x_reconstr_mean_clamped = []
+        for z in self.z_clamped:
+            self.x_reconstr_mean_clamped.append(self._generator_network( \
+                    network_weights["weights_gener"],
+                    network_weights["biases_gener"],
+                    z))
+ 
+    def _initialize_weights(self, n_hidden_recog_1, n_hidden_recog_2, n_hidden_recog_3, n_hidden_recog_4,
+                            n_hidden_gener_1,  n_hidden_gener_2, n_hidden_gener_3, n_hidden_gener_4,
+                            n_input, n_z):
+        self.n_z = n_z
+        all_weights = dict()
+        all_weights['weights_recog'] = {
+            'h1': tf.Variable(xavier_init(n_input, n_hidden_recog_1)),
+            'h2': tf.Variable(xavier_init(n_hidden_recog_1, n_hidden_recog_2)),
+            'h3': tf.Variable(xavier_init(n_hidden_recog_2, n_hidden_recog_3)),
+            'h4': tf.Variable(xavier_init(n_hidden_recog_3, n_hidden_recog_4)),
+            'out_mean': tf.Variable(xavier_init(n_hidden_recog_4, n_z)),
+            'out_log_sigma': tf.Variable(xavier_init(n_hidden_recog_4, n_z))}
+        all_weights['biases_recog'] = {
+            'b1': tf.Variable(tf.zeros([n_hidden_recog_1], dtype=tf.float32)),
+            'b2': tf.Variable(tf.zeros([n_hidden_recog_2], dtype=tf.float32)),
+            'b3': tf.Variable(tf.zeros([n_hidden_recog_3], dtype=tf.float32)),
+            'b4': tf.Variable(tf.zeros([n_hidden_recog_4], dtype=tf.float32)),
+            'out_mean': tf.Variable(tf.zeros([n_z], dtype=tf.float32)),
+            'out_log_sigma': tf.Variable(tf.zeros([n_z], dtype=tf.float32))}
+        all_weights['weights_gener'] = {
+            'h1': tf.Variable(xavier_init(n_z, n_hidden_gener_1)),
+            'h2': tf.Variable(xavier_init(n_hidden_gener_1, n_hidden_gener_2)),
+            'h3': tf.Variable(xavier_init(n_hidden_gener_2, n_hidden_gener_3)),
+            'h4': tf.Variable(xavier_init(n_hidden_gener_3, n_hidden_gener_4)),
+            'out_mean': tf.Variable(xavier_init(n_hidden_gener_4, n_input)),
+            'out_log_sigma': tf.Variable(xavier_init(n_hidden_gener_3, n_input))}
+        all_weights['biases_gener'] = {
+            'b1': tf.Variable(tf.zeros([n_hidden_gener_1], dtype=tf.float32)),
+            'b2': tf.Variable(tf.zeros([n_hidden_gener_2], dtype=tf.float32)),
+            'b3': tf.Variable(tf.zeros([n_hidden_gener_3], dtype=tf.float32)),
+            'b4': tf.Variable(tf.zeros([n_hidden_gener_4], dtype=tf.float32)),
+            'out_mean': tf.Variable(tf.zeros([n_input], dtype=tf.float32)),
+            'out_log_sigma': tf.Variable(tf.zeros([n_input], dtype=tf.float32))}
+        return all_weights
+            
+    def _recognition_network(self, weights, biases, x):
+        # Generate probabilistic encoder (recognition network), which
+        # maps inputs onto a normal distribution in latent space.
+        # The transformation is parametrized and can be learned.
+        layer_1 = self.transfer_fct(tf.add(tf.matmul(x, weights['h1']), 
+                                           biases['b1'])) 
+        layer_2 = self.transfer_fct(tf.add(tf.matmul(layer_1, weights['h2']), 
+                                           biases['b2'])) 
+        layer_3 = self.transfer_fct(tf.add(tf.matmul(layer_2, weights['h3']), 
+                                           biases['b3'])) 
+        layer_4 = self.transfer_fct(tf.add(tf.matmul(layer_3, weights['h4']), 
+                                           biases['b4'])) 
+ 
+        z_mean = tf.add(tf.matmul(layer_4, weights['out_mean']),
+                        biases['out_mean'])
+        z_log_sigma_sq = \
+            tf.add(tf.matmul(layer_4, weights['out_log_sigma']), 
+                   biases['out_log_sigma'])
+        return (z_mean, z_log_sigma_sq)
 
+    def _generator_network(self, weights, biases, z):
+        # Generate probabilistic decoder (decoder network), which
+        # maps points in latent space onto a Bernoulli distribution in data space.
+        # The transformation is parametrized and can be learned.
+        layer_1 = self.transfer_fct(tf.add(tf.matmul(z, weights['h1']), 
+                                           biases['b1'])) 
+        layer_2 = self.transfer_fct(tf.add(tf.matmul(layer_1, weights['h2']), 
+                                           biases['b2'])) 
+        layer_3 = self.transfer_fct(tf.add(tf.matmul(layer_2, weights['h3']), 
+                                           biases['b3'])) 
+        layer_4 = self.transfer_fct(tf.add(tf.matmul(layer_3, weights['h4']), 
+                                           biases['b4'])) 
+ 
+        x_reconstr_mean = \
+            tf.nn.sigmoid(tf.add(tf.matmul(layer_4, weights['out_mean']), 
+                                 biases['out_mean']))
+        
+        return x_reconstr_mean
+            
+    def _create_loss(self):
+        # The loss is composed of two terms:
+        # 1.) The reconstruction loss (the negative log probability
+        #     of the input under the reconstructed Bernoulli distribution 
+        #     induced by the decoder in the data space).
+        #     This can be interpreted as the number of "nats" required
+        #     for reconstructing the input when the activation in latent
+        #     is given.
+        # Adding 1e-10 to avoid evaluatio of log(0.0)
+        self.reconstr_loss = \
+            - tf.reduce_sum(self.x * tf.log(1e-10 + self.x_reconstr_mean) + \
+                     (1-self.x) * tf.log(1e-10 + 1 - self.x_reconstr_mean), 1)
+        tf.summary.scalar('reconstr_loss', tf.reduce_mean(self.reconstr_loss))    
+        self.reconstr_loss_clamped = []
+        
+        for i in range(len(self.x_reconstr_mean_clamped)):
+            reconstr = self.x_reconstr_mean_clamped[i]
+            self.reconstr_loss_clamped.append( \
+                - tf.reduce_sum(self.x * tf.log(1e-10 + reconstr) + \
+                     (1-self.x) * tf.log(1e-10 + 1 - reconstr), 1))
+ 
+            #tf.summary.scalar('reconstr_loss_' + str(i), self.reconstr_loss_clamped[i])    
+        # 2.) The latent loss, which is defined as the Kullback Leibler divergence 
+        ##    between the distribution in latent space induced by the encoder on 
+        #     the data and some prior. This acts as a kind of regularizer.
+        #     This can be interpreted as the number of "nats" required
+        #     for transmitting the the latent space distribution given
+        #     the prior.
+        self.latent_loss = - 0.5 * tf.reduce_sum(1 + self.z_log_sigma_sq 
+                                           - tf.square(self.z_mean) 
+                                           - tf.exp(self.z_log_sigma_sq), 1)
+        tf.summary.scalar('latent_loss', tf.reduce_mean(self.latent_loss))
+        self.cost = tf.reduce_mean(self.rc_loss * self.reconstr_loss + \
+                                   self.kl_loss * self.latent_loss)   # average over batch
+        tf.summary.scalar('total_loss', self.cost)
+        self.optimizer = \
+                tf.train.AdamOptimizer(learning_rate=self.learning_rate).minimize(self.cost)
+ 
 
-# Building the decoder
-def decoder(z):
-    layer_1 = conv2d(z, weights['decoder_h1'], biases['decoder_h1'])
-    layer_2 = reshape(conv2d(layers_1, weights['decoder_h2'], biases['decoder_h2']), \
-            [-1, 16, 16, n_hidden_3])
-    layer_3 = relu(conv2d(resize(layer_2, [32, 32]), weights['decoder_h3'], biases['decoder_h3']))
-    layer_4 = relu(conv2d(resize(layer_3, [56, 56]), weights['decoder_h4'], biases['decoder_h4']))
-    x_p = relu(conv2d(resize(layer_4, [im_size, im_size]), weights['decoder_h5'], biases['decoder_h5']))
-    return x_p
+        # clamped reconstruction optimizer
+        
+        self.cost_clamped = []
+        for i in range(len(self.reconstr_loss_clamped)):
+            loss = self.reconstr_loss_clamped[i]
+            self.cost_clamped.append( \
+                tf.reduce_mean(self.rc_loss * loss + \
+                               self.kl_loss * self.latent_loss))
+            #tf.summary.scalar('total_loss_'+str(i), self.cost_clamped[i])
 
-# Construct model
-encoder_op = encoder(X)
-decoder_op = decoder(encoder_op)
+        self.optimizer_clamped = []
+        for cost in self.cost_clamped:
+            self.optimizer_clamped.append( \
+                tf.train.AdamOptimizer(learning_rate=self.learning_rate).minimize(cost))
+        
+    def partial_fit(self, X, z_index=-1):
+        """Train model based on mini-batch of input data.
+        
+        Return cost of mini-batch.
+        """
+        if z_index == -1:
+            opt, cost, kl, rc, smr = self.sess.run((self.optimizer, self.cost, \
+                                       self.latent_loss, self.reconstr_loss, self.summaries), 
+                                      feed_dict={self.x: X})
+        else:
+            opt, cost, kl, rc, smr = self.sess.run((self.optimizer_clamped[z_index], \
+                                       self.cost_clamped[z_index], \
+                                       self.latent_loss, self.reconstr_loss_clamped[z_index], \
+                                       self.summaries),\
+                                      feed_dict={self.x: X})
 
-# Prediction
-y_pred = decoder_op
-# Targets (Labels) are the input data.
-y_true = X
+        return cost, smr, np.mean(kl), np.mean(rc)
+    
+    def transform(self, X):
+        """Transform data by mapping it into the latent space."""
+        # Note: This maps to mean of distribution, we could alternatively
+        # sample from Gaussian distribution
+        return self.sess.run(self.z_mean, feed_dict={self.x: X})
+    
+    def generate(self, z_mu=None):
+        """ Generate data by sampling from latent space.
+        
+        If z_mu is not None, data for this point in latent space is
+        generated. Otherwise, z_mu is drawn from prior in latent 
+        space.        
+        """
+        if z_mu is None:
+            z_mu = np.random.normal(size=[self.batch_size, self.network_architecture["n_z"]])
+        # Note: This maps to mean of distribution, we could alternatively
+        # sample from Gaussian distribution
+        return self.sess.run(self.x_reconstr_mean, 
+                             feed_dict={self.z: z_mu})
+    
+    def reconstruct(self, X):
+        """ Use VAE to reconstruct given data. """
+        return self.sess.run(self.x_reconstr_mean, 
+                             feed_dict={self.x: X})
+def train(sess, network_architecture, inputs, input_configs, cur_path, clamped_train=False,\
+          learning_rate=0.00001,
+          batch_size=50, training_epochs=10, display_step=100,
+          controlled_z=2, rc_loss=1, kl_loss=1, loaded=False, continuous=False):
 
-# Define loss and optimizer, minimize the squared error
-rc_coeff = tf.constant(1)
-kl_coeff = tf.constant(1)
-
-l_rc = tf.reduce_mean(tf.pow(y_true - y_pred, 2))
-l_kl = tf.contrib.distributions.kl()
-
-cost = tf.add(tf.scalar_mul(rc_coeff, l_rc), tf.scalar_mul(kl_coeff, l_kl))
-optimizer = tf.train.RMSPropOptimizer(learning_rate).minimize(cost)
-
-# Initializing the variables
-init = tf.initialize_all_variables()
-
-# Launch the graph
-with tf.Session() as sess:
-    sess.run(init)
-    total_batch = int(mnist.train.num_examples/batch_size)
+    train_writer = tf.summary.FileWriter(os.path.join(cur_path, 'tb/train/'))
+    vae = VariationalAutoencoder(sess, network_architecture, 
+                                 learning_rate=learning_rate, 
+                                 batch_size=batch_size,
+                                 controlled_z=controlled_z,
+                                 rc_loss=rc_loss,
+                                 kl_loss=kl_loss)
+    total_iters = training_epochs * inputs.shape[0] / batch_size
     # Training cycle
-    for epoch in range(training_epochs):
-        # Loop over all batches
-        for i in range(total_batch):
-            batch_xs, batch_ys = mnist.train.next_batch(batch_size)
-            # Run optimization op (backprop) and cost op (to get loss value)
-            _, c = sess.run([optimizer, cost], feed_dict={X: batch_xs})
+    for iters in range(total_iters):
+        if not clamped_train: 
+            if not continuous:
+                batch_xs = inputs[np.random.choice(range(inputs.shape[0]), batch_size, replace=False),:]
+            else:
+                type_to_train = random.choice([[t] * input_configs[t]["ratio"] \
+                for t in input_configs.keys()])      
+                type_to_train = type_to_train[0]
+                same_config_inputs = random.choice(input_configs[type_to_train]["index"])
+                inputs_index_to_use = np.random.choice(same_config_inputs, batch_size, replace=False)
+                batch_xs = inputs[inputs_index_to_use, :]
+            # Fit training using batch data
+            cost, smr, kl, rc = vae.partial_fit(batch_xs, -1)
+        else:
+            type_to_train = random.choice([[t] * input_configs[t]["ratio"] \
+            for t in input_configs.keys()])       
+            type_to_train = type_to_train[0]
+            same_config_inputs = random.choice(input_configs[type_to_train]["index"])
+            inputs_index_to_use = np.random.choice(same_config_inputs, batch_size, replace=False)
+            batch_xs = inputs[inputs_index_to_use, :]
+        # Fit training using batch data
+            cost, smr, kl, rc = vae.partial_fit(batch_xs, input_configs[type_to_train]["z"])
+  
+        train_writer.add_summary(smr, iters)
         # Display logs per epoch step
-        if epoch % display_step == 0:
-            print("Epoch:", '%04d' % (epoch+1),
-                  "cost=", "{:.9f}".format(c))
+        if iters % display_step == 0:
+            print "iters:", '%04d' % (iters+1), \
+                  "total_loss=", "{:.9f}".format(cost),\
+                  "kl_loss=", "{:.9f}".format(kl),\
+                  "rc_loss=", "{:.9f}".format(rc)
+    return vae
 
-    print("Optimization Finished!")
+def visualize(matrix, output_name, scale=255, offset=0, img_shape=(1, 150, 150)):
+    matrix = matrix.reshape(img_shape)  * scale + offset
+    matrix = matrix.clip(0,255)
+    
+    # h*w*c
+    image = np.transpose(matrix, (1,2,0))
 
-    # Applying encode and decode over test set
-    encode_decode = sess.run(
-        y_pred, feed_dict={X: mnist.test.images[:examples_to_show]})
-    # Compare original images with their reconstructions
-    f, a = plt.subplots(2, 10, figsize=(10, 2))
-    for i in range(examples_to_show):
-        a[0][i].imshow(np.reshape(mnist.test.images[i], (28, 28)))
-        a[1][i].imshow(np.reshape(encode_decode[i], (28, 28)))
-    f.show()
-    plt.draw()
-    plt.waitforbuttonpress()
+    image = image.astype('uint8')
+    if img_shape[0] == 3:
+        mode = "RGB"
+    else:
+        mode = "L"
+        image = image[:,:,0]
+    img = PIL.Image.fromarray(image, mode=mode)
+    img.save(output_name)
+
+    
+def visualize_reconstruction(vae, folder, inputs):
+    if not os.path.exists(folder):
+        os.mkdir(folder)
+
+    samples = np.concatenate(\
+        [vae.reconstruct(inputs[i*vae.batch_size:(i+1) * vae.batch_size,]) for i in \
+            range(0, inputs.shape[0]/vae.batch_size)])
+
+    for i in range(samples.shape[0]):
+        visualize(samples[i,:], os.path.join(folder, str(i)+".png"))
+    
+def visualize_generation(vae, folder, inputs):
+    if not os.path.exists(folder):
+        os.mkdir(folder)
+
+    samples = np.concatenate(\
+        [vae.generate(z_mu=inputs[i*vae.batch_size:(i+1) * vae.batch_size,]) for i in \
+            range(0, inputs.shape[0]/vae.batch_size)])
+
+    for i in range(samples.shape[0]):
+        visualize(samples[i,:], os.path.join(folder, str(i)+".png"))
+
+
+def visualize_latent_space(vae, folder, inputs, fn):
+    color = [int((i%vae.batch_size)/10) for i in range(vae.batch_size)]
+    markers = ["o", "x", "+"]
+    if not os.path.exists(folder):
+        os.mkdir(folder)
+
+    plt.figure(figsize=(8, 6))
+    plt.grid()
+    for index in range(len(inputs)):  
+        inp = inputs[index]
+        z_mu = np.concatenate(\
+            [vae.transform(inp[i*vae.batch_size:(i+1) * vae.batch_size,:]) for i in \
+            range(0, (inp.shape[0])/vae.batch_size)])
+        plt.scatter(z_mu[:, 0], z_mu[:, 1], c=color, marker=markers[index]) 
+    plt.colorbar()
+    plt.savefig(os.path.join(folder, fn+'.png'))
+
+network_architecture = \
+    dict(n_hidden_recog_1=4000, # 1st layer encoder neurons
+         n_hidden_recog_2=1000, # 2nd layer encoder neurons
+         n_hidden_recog_3=500, # 2nd layer encoder neurons
+         n_hidden_recog_4=100, # 2nd layer encoder neurons
+         n_hidden_gener_1=100, # 2nd layer encoder neurons
+         n_hidden_gener_2=500, # 1st layer decoder neurons
+         n_hidden_gener_3=1000, # 2nd layer decoder neurons
+         n_hidden_gener_4=4000, # 2nd layer decoder neurons
+         n_input=22500, # NIST data input (img shape: 28*28)
+         n_z=2)  # dimensionality of latent space
+
+inputs = np.load("/home/ubuntu/data/statue1_rot_100_light_100/X_train.npy")
+cur_path = "/home/ubuntu/Documents/dc_ign/"
+# index contains a list of index lists where each index lists is a 
+# specfic configuration of a given variation (e.g "rotation"),
+# index in a specific index list are index of inputs having that specific
+# variation (e.g "rotation" = 36)
+input_configs = {
+    "rotation": {
+        "index": [range(x, 10000, 100) for x in range(100)],
+        "ratio": 1,
+        "z": 0 
+    },
+    "light": {
+        "index": [range(x*100, (x+1)*100, 1) for x in range(100)],
+        "ratio": 1, 
+        "z": 1     
+    }
+}
+
+#saver = tf.train.Saver()
+blist=[1]
+tag="_clamp"
+tag="_continuous"
+tag="_loss_plot"
+epoches=100
+clamp=False
+for b in blist:
+    sess = tf.InteractiveSession()
+
+    vae = train(sess, network_architecture, inputs, input_configs, cur_path, batch_size=100, training_epochs=epoches, kl_loss=b, clamped_train=clamp, continuous=True)
+    visualize_reconstruction(vae, os.path.join(cur_path, "reconstruction_vae_light_b_"+str(b)+tag), inputs[5000:5100,:])
+    visualize_reconstruction(vae, os.path.join(cur_path, "reconstruction_vae_rot_b_"+str(b)+tag), inputs[range(50,10000,100),:])
+    visualize_generation(vae, os.path.join(cur_path, "generation_vae_b_"+str(b)), np.array([np.linspace(-4,4,100), [-4]*100]).T) 
+    #saver.save(sess, os.path.join(cur_path, "save.ckpt"))
+    visualize_latent_space(vae, os.path.join(cur_path, "latent_viz_b_"+str(b)+tag), \
+        [inputs[5000:5100,:],inputs[0:100,:],inputs[9900:10000,:]],  "light")
+    visualize_latent_space(vae, os.path.join(cur_path, "latent_viz_b_"+str(b)+tag), \
+        [inputs[range(0,10000,100),:],inputs[range(50,10000,100),:],inputs[range(99,10000,100),:]], "rotation")
