@@ -36,7 +36,7 @@ class VariationalAutoencoder(object):
     See "Auto-Encoding Variational Bayes" by Kingma and Welling for more details.
     """
     def __init__(self, sess, network_architecture, transfer_fct=tf.nn.softplus, 
-                 learning_rate=0.0001, batch_size=100, controlled_z=3, rc_loss=1, kl_loss=1):
+                 learning_rate=0.001, batch_size=100, controlled_z=3, rc_loss=1, kl_loss=1):
         self.network_architecture = network_architecture
         self.transfer_fct = transfer_fct
         self.learning_rate = learning_rate
@@ -117,8 +117,8 @@ class VariationalAutoencoder(object):
                     network_weights["biases_gener"],
                     z))
  
-    def _initialize_weights(self, n_hidden_recog_1, n_hidden_recog_2, n_hidden_recog_3, n_hidden_recog_4,
-                            n_hidden_gener_1,  n_hidden_gener_2, n_hidden_gener_3, n_hidden_gener_4,
+    def _initialize_weights(self, n_hidden_recog_1, n_hidden_recog_2, n_hidden_recog_3, 
+                            n_hidden_gener_1,  n_hidden_gener_2, n_hidden_gener_3,
                             n_input, n_z):
         self.n_z = n_z
         all_weights = dict()
@@ -126,28 +126,24 @@ class VariationalAutoencoder(object):
             'h1': tf.Variable(xavier_init(n_input, n_hidden_recog_1)),
             'h2': tf.Variable(xavier_init(n_hidden_recog_1, n_hidden_recog_2)),
             'h3': tf.Variable(xavier_init(n_hidden_recog_2, n_hidden_recog_3)),
-            'h4': tf.Variable(xavier_init(n_hidden_recog_3, n_hidden_recog_4)),
-            'out_mean': tf.Variable(xavier_init(n_hidden_recog_4, n_z)),
-            'out_log_sigma': tf.Variable(xavier_init(n_hidden_recog_4, n_z))}
+            'out_mean': tf.Variable(xavier_init(n_hidden_recog_3, n_z)),
+            'out_log_sigma': tf.Variable(xavier_init(n_hidden_recog_3, n_z))}
         all_weights['biases_recog'] = {
             'b1': tf.Variable(tf.zeros([n_hidden_recog_1], dtype=tf.float32)),
             'b2': tf.Variable(tf.zeros([n_hidden_recog_2], dtype=tf.float32)),
             'b3': tf.Variable(tf.zeros([n_hidden_recog_3], dtype=tf.float32)),
-            'b4': tf.Variable(tf.zeros([n_hidden_recog_4], dtype=tf.float32)),
             'out_mean': tf.Variable(tf.zeros([n_z], dtype=tf.float32)),
             'out_log_sigma': tf.Variable(tf.zeros([n_z], dtype=tf.float32))}
         all_weights['weights_gener'] = {
             'h1': tf.Variable(xavier_init(n_z, n_hidden_gener_1)),
             'h2': tf.Variable(xavier_init(n_hidden_gener_1, n_hidden_gener_2)),
             'h3': tf.Variable(xavier_init(n_hidden_gener_2, n_hidden_gener_3)),
-            'h4': tf.Variable(xavier_init(n_hidden_gener_3, n_hidden_gener_4)),
-            'out_mean': tf.Variable(xavier_init(n_hidden_gener_4, n_input)),
+            'out_mean': tf.Variable(xavier_init(n_hidden_gener_3, n_input)),
             'out_log_sigma': tf.Variable(xavier_init(n_hidden_gener_3, n_input))}
         all_weights['biases_gener'] = {
             'b1': tf.Variable(tf.zeros([n_hidden_gener_1], dtype=tf.float32)),
             'b2': tf.Variable(tf.zeros([n_hidden_gener_2], dtype=tf.float32)),
             'b3': tf.Variable(tf.zeros([n_hidden_gener_3], dtype=tf.float32)),
-            'b4': tf.Variable(tf.zeros([n_hidden_gener_4], dtype=tf.float32)),
             'out_mean': tf.Variable(tf.zeros([n_input], dtype=tf.float32)),
             'out_log_sigma': tf.Variable(tf.zeros([n_input], dtype=tf.float32))}
         return all_weights
@@ -162,13 +158,10 @@ class VariationalAutoencoder(object):
                                            biases['b2'])) 
         layer_3 = self.transfer_fct(tf.add(tf.matmul(layer_2, weights['h3']), 
                                            biases['b3'])) 
-        layer_4 = self.transfer_fct(tf.add(tf.matmul(layer_3, weights['h4']), 
-                                           biases['b4'])) 
- 
-        z_mean = tf.add(tf.matmul(layer_4, weights['out_mean']),
+        z_mean = tf.add(tf.matmul(layer_3, weights['out_mean']),
                         biases['out_mean'])
         z_log_sigma_sq = \
-            tf.add(tf.matmul(layer_4, weights['out_log_sigma']), 
+            tf.add(tf.matmul(layer_3, weights['out_log_sigma']), 
                    biases['out_log_sigma'])
         return (z_mean, z_log_sigma_sq)
 
@@ -182,11 +175,9 @@ class VariationalAutoencoder(object):
                                            biases['b2'])) 
         layer_3 = self.transfer_fct(tf.add(tf.matmul(layer_2, weights['h3']), 
                                            biases['b3'])) 
-        layer_4 = self.transfer_fct(tf.add(tf.matmul(layer_3, weights['h4']), 
-                                           biases['b4'])) 
  
         x_reconstr_mean = \
-            tf.nn.sigmoid(tf.add(tf.matmul(layer_4, weights['out_mean']), 
+            tf.nn.sigmoid(tf.add(tf.matmul(layer_3, weights['out_mean']), 
                                  biases['out_mean']))
         
         return x_reconstr_mean
@@ -203,7 +194,7 @@ class VariationalAutoencoder(object):
         self.reconstr_loss = \
             - tf.reduce_sum(self.x * tf.log(1e-10 + self.x_reconstr_mean) + \
                      (1-self.x) * tf.log(1e-10 + 1 - self.x_reconstr_mean), 1)
-        tf.summary.scalar('reconstr_loss', tf.reduce_mean(self.reconstr_loss))    
+        #tf.summary.scalar('reconstr_loss', self.reconstr_loss)    
         self.reconstr_loss_clamped = []
         
         for i in range(len(self.x_reconstr_mean_clamped)):
@@ -222,7 +213,7 @@ class VariationalAutoencoder(object):
         self.latent_loss = - 0.5 * tf.reduce_sum(1 + self.z_log_sigma_sq 
                                            - tf.square(self.z_mean) 
                                            - tf.exp(self.z_log_sigma_sq), 1)
-        tf.summary.scalar('latent_loss', tf.reduce_mean(self.latent_loss))
+        #tf.summary.scalar('latent_loss', self.latent_loss)
         self.cost = tf.reduce_mean(self.rc_loss * self.reconstr_loss + \
                                    self.kl_loss * self.latent_loss)   # average over batch
         tf.summary.scalar('total_loss', self.cost)
@@ -360,18 +351,6 @@ def visualize_reconstruction(vae, folder, inputs):
 
     for i in range(samples.shape[0]):
         visualize(samples[i,:], os.path.join(folder, str(i)+".png"))
-    
-def visualize_generation(vae, folder, inputs):
-    if not os.path.exists(folder):
-        os.mkdir(folder)
-
-    samples = np.concatenate(\
-        [vae.generate(z_mu=inputs[i*vae.batch_size:(i+1) * vae.batch_size,]) for i in \
-            range(0, inputs.shape[0]/vae.batch_size)])
-
-    for i in range(samples.shape[0]):
-        visualize(samples[i,:], os.path.join(folder, str(i)+".png"))
-
 
 def visualize_latent_space(vae, folder, inputs, fn):
     color = [int((i%vae.batch_size)/10) for i in range(vae.batch_size)]
@@ -391,14 +370,12 @@ def visualize_latent_space(vae, folder, inputs, fn):
     plt.savefig(os.path.join(folder, fn+'.png'))
 
 network_architecture = \
-    dict(n_hidden_recog_1=4000, # 1st layer encoder neurons
-         n_hidden_recog_2=1000, # 2nd layer encoder neurons
-         n_hidden_recog_3=500, # 2nd layer encoder neurons
-         n_hidden_recog_4=100, # 2nd layer encoder neurons
-         n_hidden_gener_1=100, # 2nd layer encoder neurons
-         n_hidden_gener_2=500, # 1st layer decoder neurons
+    dict(n_hidden_recog_1=1000, # 1st layer encoder neurons
+         n_hidden_recog_2=500, # 2nd layer encoder neurons
+         n_hidden_recog_3=100, # 2nd layer encoder neurons
+         n_hidden_gener_1=100, # 1st layer decoder neurons
+         n_hidden_gener_2=500, # 2nd layer decoder neurons
          n_hidden_gener_3=1000, # 2nd layer decoder neurons
-         n_hidden_gener_4=4000, # 2nd layer decoder neurons
          n_input=22500, # NIST data input (img shape: 28*28)
          n_z=2)  # dimensionality of latent space
 
@@ -421,22 +398,21 @@ input_configs = {
     }
 }
 
-#saver = tf.train.Saver()
-blist=[1]
+# saver = tf.train.Saver()
+b=1
 tag="_clamp"
-tag="_continuous"
-tag="_loss_plot"
+#tag="_continuous"
+#tag=""
 epoches=100
-clamp=False
-for b in blist:
-    sess = tf.InteractiveSession()
+clamp=True
 
-    vae = train(sess, network_architecture, inputs, input_configs, cur_path, batch_size=100, training_epochs=epoches, kl_loss=b, clamped_train=clamp, continuous=True)
-    visualize_reconstruction(vae, os.path.join(cur_path, "reconstruction_vae_light_b_"+str(b)+tag), inputs[5000:5100,:])
-    visualize_reconstruction(vae, os.path.join(cur_path, "reconstruction_vae_rot_b_"+str(b)+tag), inputs[range(50,10000,100),:])
-    visualize_generation(vae, os.path.join(cur_path, "generation_vae_b_"+str(b)), np.array([np.linspace(-4,4,100), [-4]*100]).T) 
-    #saver.save(sess, os.path.join(cur_path, "save.ckpt"))
-    visualize_latent_space(vae, os.path.join(cur_path, "latent_viz_b_"+str(b)+tag), \
-        [inputs[5000:5100,:],inputs[0:100,:],inputs[9900:10000,:]],  "light")
-    visualize_latent_space(vae, os.path.join(cur_path, "latent_viz_b_"+str(b)+tag), \
-        [inputs[range(0,10000,100),:],inputs[range(50,10000,100),:],inputs[range(99,10000,100),:]], "rotation")
+sess = tf.InteractiveSession()
+
+vae = train(sess, network_architecture, inputs, input_configs, cur_path, batch_size=100, training_epochs=epoches, kl_loss=b, clamped_train=clamp, continuous=False)
+visualize_reconstruction(vae, os.path.join(cur_path, "reconstruction_vae_light_b_"+str(b)+tag), inputs[5000:5100,:])
+visualize_reconstruction(vae, os.path.join(cur_path, "reconstruction_vae_rot_b_"+str(b)+tag), inputs[range(50,10000,100),:])
+# saver.save(sess, os.path.join(cur_path, "save.ckpt"))
+visualize_latent_space(vae, os.path.join(cur_path, "latent_viz_b_"+str(b)+tag), \
+    [inputs[5000:5100,:],inputs[0:100,:],inputs[9900:10000,:]],  "light")
+visualize_latent_space(vae, os.path.join(cur_path, "latent_viz_b_"+str(b)+tag), \
+    [inputs[range(0,10000,100),:],inputs[range(50,10000,100),:],inputs[range(99,10000,100),:]], "rotation")
