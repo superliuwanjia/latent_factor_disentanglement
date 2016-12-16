@@ -203,7 +203,7 @@ class VariationalAutoencoder(object):
         self.reconstr_loss = \
             - tf.reduce_sum(self.x * tf.log(1e-10 + self.x_reconstr_mean) + \
                      (1-self.x) * tf.log(1e-10 + 1 - self.x_reconstr_mean), 1)
-        #tf.summary.scalar('reconstr_loss', self.reconstr_loss)    
+        tf.summary.scalar('reconstr_loss', tf.reduce_mean(self.reconstr_loss))    
         self.reconstr_loss_clamped = []
         
         for i in range(len(self.x_reconstr_mean_clamped)):
@@ -222,7 +222,7 @@ class VariationalAutoencoder(object):
         self.latent_loss = - 0.5 * tf.reduce_sum(1 + self.z_log_sigma_sq 
                                            - tf.square(self.z_mean) 
                                            - tf.exp(self.z_log_sigma_sq), 1)
-        #tf.summary.scalar('latent_loss', self.latent_loss)
+        tf.summary.scalar('latent_loss', tf.reduce_mean(self.latent_loss))
         self.cost = tf.reduce_mean(self.rc_loss * self.reconstr_loss + \
                                    self.kl_loss * self.latent_loss)   # average over batch
         tf.summary.scalar('total_loss', self.cost)
@@ -425,9 +425,9 @@ input_configs = {
 blist=[1]
 tag="_clamp"
 tag="_continuous"
-tag="_large_clamp_redo"
-epoches=100
-clamp=True
+tag="_loss_plot_clamped"
+epoches=10
+clamp=False
 for b in blist:
     sess = tf.InteractiveSession()
 
