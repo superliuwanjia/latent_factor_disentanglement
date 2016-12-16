@@ -360,6 +360,18 @@ def visualize_reconstruction(vae, folder, inputs):
 
     for i in range(samples.shape[0]):
         visualize(samples[i,:], os.path.join(folder, str(i)+".png"))
+    
+def visualize_generation(vae, folder, inputs):
+    if not os.path.exists(folder):
+        os.mkdir(folder)
+
+    samples = np.concatenate(\
+        [vae.generate(z_mu=inputs[i*vae.batch_size:(i+1) * vae.batch_size,]) for i in \
+            range(0, inputs.shape[0]/vae.batch_size)])
+
+    for i in range(samples.shape[0]):
+        visualize(samples[i,:], os.path.join(folder, str(i)+".png"))
+
 
 def visualize_latent_space(vae, folder, inputs, fn):
     color = [int((i%vae.batch_size)/10) for i in range(vae.batch_size)]
@@ -409,20 +421,21 @@ input_configs = {
     }
 }
 
-# saver = tf.train.Saver()
+#saver = tf.train.Saver()
 blist=[1]
 tag="_clamp"
 tag="_continuous"
-tag="_large"
+tag="_large_clamp_redo"
 epoches=100
-clamp=False
+clamp=True
 for b in blist:
     sess = tf.InteractiveSession()
 
-    vae = train(sess, network_architecture, inputs, input_configs, cur_path, batch_size=100, training_epochs=epoches, kl_loss=b, clamped_train=clamp, continuous=False)
+    vae = train(sess, network_architecture, inputs, input_configs, cur_path, batch_size=100, training_epochs=epoches, kl_loss=b, clamped_train=clamp, continuous=True)
     visualize_reconstruction(vae, os.path.join(cur_path, "reconstruction_vae_light_b_"+str(b)+tag), inputs[5000:5100,:])
     visualize_reconstruction(vae, os.path.join(cur_path, "reconstruction_vae_rot_b_"+str(b)+tag), inputs[range(50,10000,100),:])
-# saver.save(sess, os.path.join(cur_path, "save.ckpt"))
+    visualize_generation(vae, os.path.join(cur_path, "generation_vae_b_"+str(b)), np.array([np.linspace(-4,4,100), [-4]*100]).T) 
+    #saver.save(sess, os.path.join(cur_path, "save.ckpt"))
     visualize_latent_space(vae, os.path.join(cur_path, "latent_viz_b_"+str(b)+tag), \
         [inputs[5000:5100,:],inputs[0:100,:],inputs[9900:10000,:]],  "light")
     visualize_latent_space(vae, os.path.join(cur_path, "latent_viz_b_"+str(b)+tag), \

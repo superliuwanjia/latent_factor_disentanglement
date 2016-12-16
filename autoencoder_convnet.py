@@ -15,7 +15,7 @@ tf.set_random_seed(0)
 np.set_printoptions(threshold='nan')
 
 data_folder = "/home/ubuntu/data/statue1_rot_100_light_100/"
-def conv2d(x, W, b):
+def conv2d(x, W, b, pad="VALID"):
     '''
     Perform 2-D convolution
     :param x: input tensor of size [N, W, H, Cin] where
@@ -32,7 +32,7 @@ def conv2d(x, W, b):
     '''
 
     # IMPLEMENT YOUR CONV2D HERE
-    h_conv = tf.nn.conv2d(x, W, [1, 1, 1, 1], "SAME")
+    h_conv = tf.nn.conv2d(x, W, [1, 1, 1, 1], pad)
     return tf.nn.bias_add(h_conv, b)
 
 def max_pool_2x2(x):
@@ -126,7 +126,7 @@ class VariationalAutoencoder(object):
         self.kl_loss=kl_loss
          
         # tf Graph input
-        self.x = tf.placeholder(tf.float32, [batch_size, network_architecture["n_input"]])
+        self.x = tf.placeholder(tf.float32, [batch_size, 150, 150,1])
         
         self.n_z = network_architecture["n_z"]
         
@@ -204,10 +204,10 @@ class VariationalAutoencoder(object):
         all_weights = dict()
         all_weights['weights_recog'] = {
             'h1': weight_variable([5, 5, 1, 96]), # 146/2 = 73
-            'h2': weight_variable([6, 6, 32, 64]), # 68/2 = 34
+            'h2': weight_variable([6, 6, 96, 64]), # 68/2 = 34
             'h3': weight_variable([5, 5, 64, 32]), # 30/2 = 15
             'out_mean': weight_variable([15 * 15 * 32, n_z]),
-            'out_log_sigma': weight_variable([32, n_z])}
+            'out_log_sigma': weight_variable([15*15*32, n_z])}
         all_weights['biases_recog'] = {
             'b1': bias_variable([96]),
             'b2': bias_variable([64]),
@@ -216,42 +216,44 @@ class VariationalAutoencoder(object):
             'out_log_sigma': bias_variable([n_z])}
         all_weights['weights_gener'] = {
             'h1': weight_variable([n_z, 7200]),
-            'h2': weight_variable([7, 7, 1, 32]),
-            'h3': weight_variable([7, 7, 32, 64]),
-            'h4': weight_variable([7, 7, 64, 96]),
-            'out_mean': weight_variable([7, 7, 96, 1]),
+            'h2': weight_variable([7, 7, 32, 64]),
+            'h3': weight_variable([7, 7, 64, 96]),
+            'h4': weight_variable([7, 7, 96, 96]),
+            'out_mean': weight_variable([7, 7, 96, 1])}
         all_weights['biases_gener'] = {
-            'b1': bias_variables([7200]),
-            'b2': bias_variables([32]),
-            'b3': bias_variables([64]),
-            'b4': bias_variables([96]),
-            'out_mean': bias_variables([1]),
+            'b1': bias_variable([7200]),
+            'b2': bias_variable([64]),
+            'b3': bias_variable([96]),
+            'b4': bias_variable([96]),
+            'out_mean': bias_variable([1])}
         return all_weights
             
     def _recognition_network(self, weights, biases, x):
         # Generate probabilistic encoder (recognition network), which
         # maps inputs onto a normal distribution in latent space.
         # The transformation is parametrized and can be learned.
-        layer_1 = max_pool_2x2(relu(conv2d(x, weights['h1'], biases['h1'])))
-        layer_2 = max_pool_2x2(relu(conv2d(layer_1, weights['h2'], biases['h2'])))
-        layer_3 = max_pool_2x2(relu(conv2d(layer_2, weights['h3'], biases['h3'])))
-        layer_4 = tf.nn.bias_add(mult(flatten(layer_3, [self.batch_size, 15*15*128]),weights['h4']), biases['h4']) 
-        layer_5 = tf.nn.bias_add(mult(layer_4,weights['h5']), biases['h5']) 
-        z_mean = tf.nn.bias_add(mult(layer_5, weights['out_mean']),
+        print weights
+        print biases
+        layer_1 = max_pool_2x2(relu(conv2d(x, weights['h1'], biases['b1'])))
+        layer_2 = max_pool_2x2(relu(conv2d(layer_1, weights['h2'], biases['b2'])))
+        layer_3 = max_pool_2x2(relu(conv2d(layer_2, weights['h3'], biases['b3'])))
+        layer_3 = flatten(layer_3, [self.batch_size, 15*15*32])
+        z_mean = tf.nn.bias_add(mult(layer_3, weights['out_mean']),
                         biases['out_mean'])
         z_log_sigma_sq = \
-            tf.nn.bias_add(mult(layer_5, weights['out_log_sigma']), 
+            tf.nn.bias_add(mult(layer_3, weights['out_log_sigma']), 
                    biases['out_log_sigma'])
         return (z_mean, z_log_sigma_sq)
 
     def _generator_network(self, weights, biases, z):
         # Generate probabilistic decoder (decoder network), which
-        # maps points in latent space onto a Bernoulli distribution in data space.
+        # maps points in latent spac onto a Bernoulli distribution in data space.
         # The transformation is parametrized and can be learned.
-        layer_1 = tf.nn.bias_add(mult(z, weights['h1']), biases['h1'])
-        layer_2 = relu(conv2d(tf.image.resize_images(flatten(layer_1, [self.batch_size, 15, 15,1]), [30, 30], method=1), weights['h2'], biases['h2']))
-        layer_3 = relu(conv2d(tf.image.resize_images(layer_2, [48, 48], method=1), weights['h3'], biases['h3']))
-        layer_4 = relu(conv2d(tf.image.resize_images(layer_3, [84, 84], method=1), weights['h4'], biases['h4']))
+        layer_1 = tf.nn.bias_add(mult(z, weights['h1']), biases['b1'])
+        layer_1 = tf.image.resize_images(flatten(layer_1, [self.batch_size, 15, 15, 32]), [30, 30], method=1)
+        layer_2 = relu(conv2d(layer_1, weights['h2'], biases['b2']))
+        layer_3 = relu(conv2d(tf.image.resize_images(layer_2, [48, 48], method=1), weights['h3'], biases['b3']))
+        layer_4 = relu(conv2d(tf.image.resize_images(layer_3, [84, 84], method=1), weights['h4'], biases['b4']))
         x_reconstr_mean = relu(conv2d(tf.image.resize_images(layer_3, [156, 156], method=1), weights['out_mean'], biases['out_mean']))
         
         return x_reconstr_mean
@@ -364,7 +366,7 @@ def train(sess, network_architecture, inputs, input_configs, cur_path, clamped_t
                                  controlled_z=controlled_z,
                                  rc_loss=rc_loss,
                                  kl_loss=kl_loss)
-    total_iters = training_epochs * inputs.shape[0] / batch_size
+    total_iters = int(training_epochs * inputs.shape[0] / batch_size)
     # Training cycle
     for iters in range(total_iters):
         if not clamped_train: 
@@ -473,12 +475,12 @@ input_configs = {
 }
 
 # saver = tf.train.Saver()
-blist=[100]
+blist=[1]
 tag="_clamp"
 tag="_continuous"
-tag=""
-epoches=100
-clamp=False
+tag="_conv_conv"
+epoches=10
+clamp=True
 for b in blist:
     sess = tf.InteractiveSession()
 
