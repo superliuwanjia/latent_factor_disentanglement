@@ -2,7 +2,7 @@
 
 Variations with Variational Autoencoders:
 This repo contains Tensorflow experimentation with Variational Autoencoders and its variant, the Deep Convolutional Inverse Graphics Networks (DCIGN), on a Blender Render Engine generated image data set.
-We successfully taught the network how to rotate objects and change the lighting on objects in images and produce quality reconstructions through learning human interpretable latent features via the DCIGN method and then tweaking those latent appropriately before generating images.
+We successfully taught the network how to rotate objects and change the lighting on objects in images and produce quality reconstructions through learning human interpretable latent features via the DCIGN method and then tweaking those human-interpretable latents appropriately while generating images.
 Project and code co-authored by Ethan Perez (ethanp56) and Robin Liu (superliuwanjia)
 
 Great thanks to:
